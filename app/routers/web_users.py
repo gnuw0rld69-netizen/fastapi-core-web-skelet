@@ -1,11 +1,16 @@
 from __future__ import annotations
 
 from pathlib import Path
+from datetime import datetime, timedelta, timezone
+import base64
+import io
 
 from email_validator import EmailNotValidError, validate_email
 from fastapi import APIRouter, Form, Request, status
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
+from jose import jwt
+import qrcode
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
@@ -25,6 +30,9 @@ TEMPLATES_DIR = Path(__file__).resolve().parents[1] / "templates"
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 
 router = APIRouter(prefix="/{lang}/users", tags=["Web Users"])
+
+PENDING_2FA_COOKIE = "pending_2fa"
+PENDING_2FA_TTL_SECONDS = 600
 
 
 def _get_current_user_from_cookie(
@@ -73,6 +81,54 @@ def _get_current_user_from_cookie(
     return user
 
 
+def _create_two_factor_token(user_id: int) -> str:
+    now = datetime.now(timezone.utc)
+    expire = now + timedelta(seconds=PENDING_2FA_TTL_SECONDS)
+    payload = {
+        "sub": str(user_id),
+        "type": "two_factor",
+        "iat": now,
+        "exp": expire,
+    }
+    return jwt.encode(payload, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
+
+
+def _get_pending_two_factor_user(request: Request, db: Session) -> User | None:
+    token = request.cookies.get(PENDING_2FA_COOKIE)
+    if not token:
+        return None
+    try:
+        payload = decode_token(token)
+    except InvalidTokenError:
+        return None
+    if payload.get("type") != "two_factor":
+        return None
+    user_id = payload.get("sub")
+    if not user_id:
+        return None
+    try:
+        user_id_int = int(str(user_id))
+    except (TypeError, ValueError):
+        return None
+    user = UserService.get_by_id(db, user_id_int)
+    if not user or not user.is_active:
+        return None
+    if not user.is_two_factor_enabled:
+        return None
+    return user
+
+
+def _generate_qr_code_data_uri(data: str) -> str:
+    qr = qrcode.QRCode(box_size=4, border=2)
+    qr.add_data(data)
+    qr.make(fit=True)
+    image = qr.make_image(fill_color="black", back_color="white")
+    buffer = io.BytesIO()
+    image.save(buffer, "PNG")
+    encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
+    return f"data:image/png;base64,{encoded}"
+
+
 def _redirect_with_message(lang: str, path: str, message: str) -> RedirectResponse:
     return RedirectResponse(f"/{lang}{path}?message={message}", status_code=status.HTTP_303_SEE_OTHER)
 
@@ -83,6 +139,16 @@ def _lang_path(lang: str, path: str) -> str:
 
 def _msg(lang: str, key: str, fallback: str) -> str:
     return get_translations(lang).get(key, fallback)
+
+
+def _redirect_if_unverified(user: User | None, lang: str) -> RedirectResponse | None:
+    if user and not user.is_verified:
+        return _redirect_with_message(
+            lang,
+            "/users/profile",
+            _msg(lang, "web.msg.email_not_verified", "Email is not verified"),
+        )
+    return None
 
 
 def _is_admin_link_visible(user: User | None) -> bool:
@@ -98,6 +164,9 @@ def users_home(request: Request, lang: str):
         lang = normalize_lang(lang)
         t = get_translations(lang)
         user = _get_current_user_from_cookie(request, db, require_verified=False)
+        redirect = _redirect_if_unverified(user, lang)
+        if redirect:
+            return redirect
         message = request.query_params.get("message")
         return templates.TemplateResponse(
             "users/home.html",
@@ -122,6 +191,19 @@ def users_auth_page(request: Request, lang: str):
         lang = normalize_lang(lang)
         t = get_translations(lang)
         user = _get_current_user_from_cookie(request, db, require_verified=False)
+        if user:
+            message_key = "web.msg.already_authenticated"
+            message_fallback = "You are already authenticated"
+            if not user.is_verified:
+                message_key = "web.msg.email_not_verified"
+                message_fallback = "Email is not verified"
+            return _redirect_with_message(
+                lang,
+                "/users/profile",
+                _msg(lang, message_key, message_fallback),
+            )
+        pending_user = _get_pending_two_factor_user(request, db)
+        otp_step = request.query_params.get("step") == "otp" and pending_user is not None
         message = request.query_params.get("message")
         return templates.TemplateResponse(
             "users/login.html",
@@ -132,6 +214,7 @@ def users_auth_page(request: Request, lang: str):
                 "nav_user": user,
                 "lang": lang,
                 "t": t,
+                "otp_step": otp_step,
                 "turnstile_site_key": settings.TURNSTILE_SITE_KEY,
                 "show_admin_link": _is_admin_link_visible(user),
             },
@@ -147,6 +230,17 @@ def users_register_page(request: Request, lang: str):
         lang = normalize_lang(lang)
         t = get_translations(lang)
         user = _get_current_user_from_cookie(request, db, require_verified=False)
+        if user:
+            message_key = "web.msg.already_authenticated"
+            message_fallback = "You are already authenticated"
+            if not user.is_verified:
+                message_key = "web.msg.email_not_verified"
+                message_fallback = "Email is not verified"
+            return _redirect_with_message(
+                lang,
+                "/users/profile",
+                _msg(lang, message_key, message_fallback),
+            )
         message = request.query_params.get("message")
         return templates.TemplateResponse(
             "users/register.html",
@@ -172,6 +266,9 @@ def users_reset_page(request: Request, lang: str):
         lang = normalize_lang(lang)
         t = get_translations(lang)
         user = _get_current_user_from_cookie(request, db, require_verified=False)
+        redirect = _redirect_if_unverified(user, lang)
+        if redirect:
+            return redirect
         message = request.query_params.get("message")
         return templates.TemplateResponse(
             "users/reset.html",
@@ -240,6 +337,7 @@ def users_profile_page(request: Request, lang: str):
                 "t": t,
                 "allowlist_entries": allowlist_entries,
                 "two_factor_setup": None,
+                "verification_required": not user.is_verified,
                 "show_admin_link": _is_admin_link_visible(user),
             },
         )
@@ -253,12 +351,15 @@ def users_login(
     lang: str,
     email: str = Form(...),
     password: str = Form(...),
-    otp_code: str | None = Form(default=None),
     turnstile_response: str | None = Form(default=None, alias="cf-turnstile-response"),
 ):
     db = next(get_db())
     try:
         lang = normalize_lang(lang)
+        user = _get_current_user_from_cookie(request, db, require_verified=False)
+        redirect = _redirect_if_unverified(user, lang)
+        if redirect:
+            return redirect
         if not TurnstileService.verify(turnstile_response, get_client_ip(request)):
             return _redirect_with_message(
                 lang,
@@ -287,37 +388,38 @@ def users_login(
                 "/users/auth",
                 _msg(lang, "web.msg.inactive_user", "Inactive user"),
             )
-        if not user.is_verified:
-            return _redirect_with_message(
-                lang,
-                "/users/auth",
-                _msg(lang, "web.msg.email_not_verified", "Email is not verified"),
-            )
-
         if user.is_two_factor_enabled:
-            if not otp_code:
-                return _redirect_with_message(
-                    lang,
-                    "/users/auth",
-                    _msg(lang, "web.msg.otp_required", "2FA code required"),
-                )
-            if not AuthService.verify_two_factor_code(user, otp_code):
-                return _redirect_with_message(
-                    lang,
-                    "/users/auth",
-                    _msg(lang, "web.msg.invalid_otp", "Invalid 2FA code"),
-                )
+            pending_token = _create_two_factor_token(user.id)
+            message = _msg(lang, "web.msg.otp_required", "2FA code required")
+            response = RedirectResponse(
+                f"/{lang}/users/auth?message={message}&step=otp",
+                status_code=status.HTTP_303_SEE_OTHER,
+            )
+            response.set_cookie(
+                PENDING_2FA_COOKIE,
+                pending_token,
+                httponly=True,
+                samesite="lax",
+                max_age=PENDING_2FA_TTL_SECONDS,
+            )
+            return response
 
         UserService.update_last_login(db, user)
         tokens = AuthService.create_tokens(user)
+        message_key = "web.msg.logged_in"
+        message_fallback = "Logged in"
+        if not user.is_verified:
+            message_key = "web.msg.email_not_verified"
+            message_fallback = "Email is not verified"
         response = _redirect_with_message(
             lang,
             "/users/profile",
-            _msg(lang, "web.msg.logged_in", "Logged in"),
+            _msg(lang, message_key, message_fallback),
         )
         max_age = settings.WEB_SESSION_HOURS * 60 * 60
         response.set_cookie("access_token", tokens.access_token, httponly=True, samesite="lax", max_age=max_age)
         response.set_cookie("refresh_token", tokens.refresh_token, httponly=True, samesite="lax", max_age=max_age)
+        response.delete_cookie(PENDING_2FA_COOKIE)
         return response
     finally:
         db.close()
@@ -333,7 +435,49 @@ def users_logout(lang: str):
     )
     response.delete_cookie("access_token")
     response.delete_cookie("refresh_token")
+    response.delete_cookie(PENDING_2FA_COOKIE)
     return response
+
+
+@router.post("/auth/otp")
+def users_login_otp(request: Request, lang: str, otp_code: str = Form(...)):
+    db = next(get_db())
+    try:
+        lang = normalize_lang(lang)
+        user = _get_pending_two_factor_user(request, db)
+        if not user:
+            response = _redirect_with_message(
+                lang,
+                "/users/auth",
+                _msg(lang, "web.msg.otp_session_missing", "2FA session expired"),
+            )
+            response.delete_cookie(PENDING_2FA_COOKIE)
+            return response
+        if not AuthService.verify_two_factor_code(user, otp_code):
+            message = _msg(lang, "web.msg.invalid_otp", "Invalid 2FA code")
+            return RedirectResponse(
+                f"/{lang}/users/auth?message={message}&step=otp",
+                status_code=status.HTTP_303_SEE_OTHER,
+            )
+        UserService.update_last_login(db, user)
+        tokens = AuthService.create_tokens(user)
+        message_key = "web.msg.logged_in"
+        message_fallback = "Logged in"
+        if not user.is_verified:
+            message_key = "web.msg.email_not_verified"
+            message_fallback = "Email is not verified"
+        response = _redirect_with_message(
+            lang,
+            "/users/profile",
+            _msg(lang, message_key, message_fallback),
+        )
+        max_age = settings.WEB_SESSION_HOURS * 60 * 60
+        response.set_cookie("access_token", tokens.access_token, httponly=True, samesite="lax", max_age=max_age)
+        response.set_cookie("refresh_token", tokens.refresh_token, httponly=True, samesite="lax", max_age=max_age)
+        response.delete_cookie(PENDING_2FA_COOKIE)
+        return response
+    finally:
+        db.close()
 
 
 @router.post("/auth/refresh")
@@ -514,6 +658,30 @@ def users_update_profile(
                 "/users/auth",
                 _msg(lang, "web.msg.unauthorized", "Unauthorized"),
             )
+        if not user.is_verified:
+            return _redirect_with_message(
+                lang,
+                "/users/profile",
+                _msg(lang, "web.msg.email_not_verified", "Email is not verified"),
+            )
+        if not user.is_verified:
+            return _redirect_with_message(
+                lang,
+                "/users/profile",
+                _msg(lang, "web.msg.email_not_verified", "Email is not verified"),
+            )
+        if not user.is_verified:
+            return _redirect_with_message(
+                lang,
+                "/users/profile",
+                _msg(lang, "web.msg.email_not_verified", "Email is not verified"),
+            )
+        if not user.is_verified:
+            return _redirect_with_message(
+                lang,
+                "/users/profile",
+                _msg(lang, "web.msg.email_not_verified", "Email is not verified"),
+            )
         try:
             payload = UserUpdate(email=email or None, full_name=full_name or None, password=password or None)
         except Exception as exc:
@@ -554,6 +722,12 @@ def users_change_password(
                 "/users/auth",
                 _msg(lang, "web.msg.unauthorized", "Unauthorized"),
             )
+        if not user.is_verified:
+            return _redirect_with_message(
+                lang,
+                "/users/profile",
+                _msg(lang, "web.msg.email_not_verified", "Email is not verified"),
+            )
         try:
             payload = PasswordChangeRequest(current_password=current_password, new_password=new_password)
         except Exception as exc:
@@ -593,6 +767,12 @@ def users_setup_two_factor(request: Request, lang: str):
                 "/users/auth",
                 _msg(lang, "web.msg.unauthorized", "Unauthorized"),
             )
+        if not user.is_verified:
+            return _redirect_with_message(
+                lang,
+                "/users/profile",
+                _msg(lang, "web.msg.email_not_verified", "Email is not verified"),
+            )
         if user.is_two_factor_enabled:
             return _redirect_with_message(
                 lang,
@@ -605,6 +785,7 @@ def users_setup_two_factor(request: Request, lang: str):
         db.commit()
         db.refresh(user)
         provisioning_uri = AuthService.get_two_factor_provisioning_uri(user, secret)
+        qr_code = _generate_qr_code_data_uri(provisioning_uri)
         allowlist_entries = UserIpAllowlistService.list_for_user(db, user.id)
         return templates.TemplateResponse(
             "users/profile.html",
@@ -619,7 +800,9 @@ def users_setup_two_factor(request: Request, lang: str):
                 "two_factor_setup": {
                     "secret": secret,
                     "provisioning_uri": provisioning_uri,
+                    "qr_code": qr_code,
                 },
+                "verification_required": not user.is_verified,
                 "show_admin_link": _is_admin_link_visible(user),
             },
         )
@@ -638,6 +821,12 @@ def users_enable_two_factor(request: Request, lang: str, code: str = Form(...)):
                 lang,
                 "/users/auth",
                 _msg(lang, "web.msg.unauthorized", "Unauthorized"),
+            )
+        if not user.is_verified:
+            return _redirect_with_message(
+                lang,
+                "/users/profile",
+                _msg(lang, "web.msg.email_not_verified", "Email is not verified"),
             )
         if user.is_two_factor_enabled:
             return _redirect_with_message(
@@ -681,6 +870,12 @@ def users_disable_two_factor(request: Request, lang: str, code: str = Form(...))
                 "/users/auth",
                 _msg(lang, "web.msg.unauthorized", "Unauthorized"),
             )
+        if not user.is_verified:
+            return _redirect_with_message(
+                lang,
+                "/users/profile",
+                _msg(lang, "web.msg.email_not_verified", "Email is not verified"),
+            )
         if not user.is_two_factor_enabled:
             return _redirect_with_message(
                 lang,
@@ -722,6 +917,12 @@ def users_allowlist_add(
                 lang,
                 "/users/auth",
                 _msg(lang, "web.msg.unauthorized", "Unauthorized"),
+            )
+        if not user.is_verified:
+            return _redirect_with_message(
+                lang,
+                "/users/profile",
+                _msg(lang, "web.msg.email_not_verified", "Email is not verified"),
             )
         try:
             UserIpAllowlistService.create_entry(

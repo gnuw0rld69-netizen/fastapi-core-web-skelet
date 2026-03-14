@@ -2,8 +2,20 @@
 
 {% block content %}
 <div class="row g-4">
-  <div class="col-12 col-lg-6">
+  <div class="col-12 col-lg-6 mx-auto">
     <div class="card p-4">
+      {% if otp_step %}
+      <div class="section-title mb-3">{{ t["auth.otp_step.title"] }}</div>
+      <p class="text-muted">{{ t["auth.otp_step.desc"] }}</p>
+      <form method="post" action="/{{ lang }}/users/auth/otp" class="mb-3">
+        <div class="mb-3">
+          <label class="form-label">{{ t["auth.otp"] }}</label>
+          <input class="form-control" name="otp_code" type="text" required />
+        </div>
+        <button class="btn btn-dark w-100" type="submit">{{ t["auth.otp_step.submit"] }}</button>
+      </form>
+      <a class="link-secondary small" href="/{{ lang }}/users/auth">{{ t["auth.back_to_login"] }}</a>
+      {% else %}
       <div class="section-title mb-3">{{ t["auth.title"] }}</div>
       {% if user %}
       <div class="alert alert-info">{{ t["register.already_authed"] }}</div>
@@ -17,10 +29,6 @@
           <label class="form-label">{{ t["auth.password"] }}</label>
           <input class="form-control" name="password" type="password" required />
         </div>
-        <div class="mb-3">
-          <label class="form-label">{{ t["auth.otp"] }}</label>
-          <input class="form-control" name="otp_code" type="text" />
-        </div>
         {% if turnstile_site_key %}
         <div class="mb-3">
           <div class="cf-turnstile" data-sitekey="{{ turnstile_site_key }}"></div>
@@ -29,29 +37,16 @@
         <button class="btn btn-dark w-100" type="submit">{{ t["auth.login"] }}</button>
       </form>
 
-      {% if user %}
-      <div class="d-flex gap-2">
-        <form method="post" action="/{{ lang }}/users/auth/refresh" class="flex-fill">
-          <button class="btn btn-outline-secondary w-100" type="submit">{{ t["auth.refresh"] }}</button>
-        </form>
-        <form method="post" action="/{{ lang }}/users/auth/logout" class="flex-fill">
-          <button class="btn btn-outline-danger w-100" type="submit">{{ t["auth.logout"] }}</button>
-        </form>
+      <div class="d-flex flex-column flex-sm-row justify-content-between gap-2 small">
+        <a class="link-secondary" href="/{{ lang }}/users/register">{{ t["home.users.register"] }}</a>
+        <a class="link-secondary" href="/{{ lang }}/users/reset">{{ t["auth.reset"] }}</a>
       </div>
       {% endif %}
     </div>
   </div>
 
-  <div class="col-12 col-lg-6">
-    <div class="card p-4 h-100">
-      <div class="section-title mb-3">{{ t["auth.need_account"] }}</div>
-      <p class="text-muted">{{ t["auth.need_account.desc"] }}</p>
-      <a class="btn btn-outline-primary w-100 mb-2" href="/{{ lang }}/users/register">{{ t["home.users.register"] }}</a>
-      <a class="btn btn-outline-warning w-100" href="/{{ lang }}/users/reset">{{ t["auth.reset"] }}</a>
-    </div>
-  </div>
 </div>
-{% if turnstile_site_key %}
+{% if turnstile_site_key and not otp_step %}
 <script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>
 {% endif %}
 {% endblock %}

@@ -11,6 +11,9 @@
     <div class="card p-3">
       <div class="section-title mb-2">{{ t["profile.menu.title"] }}</div>
       <div class="nav flex-column nav-pills">
+        {% if verification_required %}
+        <a class="nav-link" href="#verification">{{ t["profile.menu.verification"] }}</a>
+        {% else %}
         <a class="nav-link" href="#overview">{{ t["profile.menu.overview"] }}</a>
         <a class="nav-link" href="#profile">{{ t["profile.menu.profile"] }}</a>
         <a class="nav-link" href="#password">{{ t["profile.menu.password"] }}</a>
@@ -19,6 +22,7 @@
         <a class="nav-link" href="#allowlist">{{ t["profile.menu.allowlist"] }}</a>
         {% if show_admin_link %}
         <a class="nav-link" href="/{{ lang }}/admin_panel/">{{ t["profile.menu.admin"] }}</a>
+        {% endif %}
         {% endif %}
       </div>
     </div>
@@ -38,6 +42,15 @@
         </span>
       </div>
     </div>
+
+    {% if verification_required %}
+    <div id="verification" class="card p-4 mb-4">
+      <div class="section-title mb-3">{{ t["profile.section.verification"] }}</div>
+      <p class="text-muted">{{ t["profile.verification.todo"] }}</p>
+      <p class="form-hint">{{ t["profile.verification.locked_desc"] }}</p>
+      <a class="btn btn-outline-success" href="/{{ lang }}/users/verify">{{ t["profile.verification.cta"] }}</a>
+    </div>
+    {% else %}
 
     <div id="profile" class="card p-4 mb-4">
       <div class="section-title mb-3">{{ t["profile.section.profile"] }}</div>
@@ -88,6 +101,10 @@
       </form>
       {% if two_factor_setup %}
       <div class="border rounded p-3 mb-3">
+        <div class="text-center mb-3">
+          <div class="fw-semibold mb-2">{{ t["profile.twofactor.qr"] }}</div>
+          <img src="{{ two_factor_setup.qr_code }}" alt="{{ t["profile.twofactor.qr"] }}" class="img-fluid" style="max-width: 180px;" />
+        </div>
         <div class="fw-semibold">{{ t["profile.twofactor.secret"] }}</div>
         <div class="text-muted">{{ two_factor_setup.secret }}</div>
         <div class="fw-semibold mt-2">{{ t["profile.twofactor.uri"] }}</div>
@@ -176,6 +193,7 @@
       </div>
       {% endif %}
     </div>
+    {% endif %}
   </div>
 </div>
 {% endblock %}

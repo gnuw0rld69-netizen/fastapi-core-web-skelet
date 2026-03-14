@@ -140,8 +140,11 @@ Copy `.env.example` to `.env` and adjust values.
 ## Authentication
 
 - Login requires an email address. Emails are normalized to lowercase to prevent duplicates.
+- Web login uses a two-step flow when 2FA is enabled: password first, OTP step second.
 - In Swagger "Authorize", you can place the OTP in `client_secret` (or `secret_code`) when 2FA is enabled.
 - Password reset generates a temporary password and sends it by email.
+- Unverified users can sign in but are limited to the profile verification block until email verification is complete.
+- 2FA setup renders a QR code plus the secret for manual entry.
 
 ## IP Allowlist
 
