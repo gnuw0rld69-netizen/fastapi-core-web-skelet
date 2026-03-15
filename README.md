@@ -147,6 +147,8 @@ templates, and database tables (prefixed with the module name).
 Module manifests drive dynamic admin UI entries in `/admin_panel` and define the module's routers,
 templates directory, and metadata for table creation.
 
+Each module also ships its own translations under `modules/<module>/i18n/`.
+
 ### CMS Module
 
 - Admin UI: `/{lang}/admin_panel/module_cms_module`
