@@ -1,6 +1,4 @@
-##Production-ready Skelet for building Web/API apps based on FastAPI
-
-Production-ready authentication and authorization service built with FastAPI, JWT, MariaDB, and Redis.
+# Production-ready Skelet for building Web/API apps built with FastAPI, JWT, MariaDB, and Redis
 
 ## Features
 
