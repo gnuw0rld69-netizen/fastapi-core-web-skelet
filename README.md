@@ -1,4 +1,4 @@
-# Production-ready Core Skelet for  Web/API apps built with FastAPI, JWT, MariaDB, and Redis
+# Production-Ready Core Skelet for  Web/API Apps built with FastAPI, JWT, MariaDB, and Redis
 
 ## Features
 
